@@ -7,6 +7,23 @@ get_cwd_from_jsonl() {
     head -n1 "$file" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null
 }
 
+# Function to extract first user message from jsonl file
+get_first_message() {
+    local file="$1"
+    # Get the first user message content, truncate to 80 chars
+    local message=$(head -n1 "$file" 2>/dev/null | jq -r 'select(.type == "user") | .message.content // empty' 2>/dev/null | head -n1 | cut -c1-80)
+    if [ -n "$message" ] && [ "$message" != "null" ]; then
+        # Add ellipsis if truncated
+        if [ ${#message} -eq 80 ]; then
+            echo "${message}..."
+        else
+            echo "$message"
+        fi
+    else
+        echo ""
+    fi
+}
+
 # Find all jsonl files in the projects directory
 project_dir="$HOME/.claude/projects"
 if [ ! -d "$project_dir" ]; then
@@ -14,15 +31,18 @@ if [ ! -d "$project_dir" ]; then
     exit 1
 fi
 
-# Collect all cwds with their corresponding project files
+# Collect all cwds with their corresponding project files and messages
 declare -a cwds=()
 declare -a files=()
+declare -a messages=()
 
 while IFS= read -r -d '' file; do
     cwd=$(get_cwd_from_jsonl "$file")
     if [ -n "$cwd" ]; then
         cwds+=("$cwd")
         files+=("$file")
+        message=$(get_first_message "$file")
+        messages+=("$message")
     fi
 done < <(find "$project_dir" -name "*.jsonl" -type f -print0)
 
@@ -32,11 +52,17 @@ if [ ${#cwds[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Create a list for fzf with both cwd and filename
+# Create a list for fzf with cwd and first message
 declare -a display_items=()
 for i in "${!cwds[@]}"; do
-    filename=$(basename "${files[$i]}")
-    display_items+=("${cwds[$i]} | $filename")
+    if [ -n "${messages[$i]}" ]; then
+        # Show cwd and first message
+        display_items+=("${cwds[$i]} | ${messages[$i]}")
+    else
+        # Fallback to showing filename if no message
+        filename=$(basename "${files[$i]}")
+        display_items+=("${cwds[$i]} | Session: $filename")
+    fi
 done
 
 # Use fzf to select a cwd
