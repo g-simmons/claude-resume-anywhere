@@ -1,10 +1,35 @@
 #!/bin/bash
 
+# Default sort field
+SORT_FIELD="timestamp"
+
+# Parse command line options
+while getopts "s:" opt; do
+    case $opt in
+        s)
+            SORT_FIELD="$OPTARG"
+            ;;
+        \?)
+            echo "Usage: $0 [-s sort_field]" >&2
+            echo "  -s: Field to sort by (default: timestamp)" >&2
+            exit 1
+            ;;
+    esac
+done
+
 # Function to extract cwd from first message in a jsonl file
 get_cwd_from_jsonl() {
     local file="$1"
     # Get the first line and extract the cwd field
     head -n1 "$file" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null
+}
+
+# Function to extract a field from first message in a jsonl file
+get_field_from_jsonl() {
+    local file="$1"
+    local field="$2"
+    # Get the first line and extract the specified field
+    head -n1 "$file" 2>/dev/null | jq -r ".$field // empty" 2>/dev/null
 }
 
 # Function to extract first user message from jsonl file
@@ -31,46 +56,41 @@ if [ ! -d "$project_dir" ]; then
     exit 1
 fi
 
-# Collect all cwds with their corresponding project files, messages, and session IDs
-declare -a cwds=()
-declare -a files=()
-declare -a messages=()
-declare -a session_ids=()
+# Collect all projects with their metadata
+declare -a projects=()
 
 while IFS= read -r -d '' file; do
     cwd=$(get_cwd_from_jsonl "$file")
     if [ -n "$cwd" ]; then
-        cwds+=("$cwd")
-        files+=("$file")
+        sort_value=$(get_field_from_jsonl "$file" "$SORT_FIELD")
         message=$(get_first_message "$file")
-        messages+=("$message")
-        # Extract session ID from filename (it's the UUID before .jsonl)
         session_id=$(basename "$file" .jsonl)
-        session_ids+=("$session_id")
+        # Store as tab-separated: sort_value, cwd, message, session_id, file
+        projects+=("${sort_value}	${cwd}	${message}	${session_id}	${file}")
     fi
 done < <(find "$project_dir" -name "*.jsonl" -type f -print0)
 
 # Check if we found any projects
-if [ ${#cwds[@]} -eq 0 ]; then
+if [ ${#projects[@]} -eq 0 ]; then
     echo "No Claude projects found in $project_dir" >&2
     exit 1
 fi
 
-# Create a list for fzf with cwd and first message
+# Sort projects by the sort field and create display items
 declare -a display_items=()
-for i in "${!cwds[@]}"; do
-    if [ -n "${messages[$i]}" ]; then
-        # Show cwd and first message
-        display_items+=("${cwds[$i]} | ${messages[$i]}")
+declare -a sorted_projects=()
+while IFS=$'\t' read -r sort_value cwd message session_id file; do
+    if [ -n "$message" ]; then
+        display_items+=("${cwd} | ${message}")
     else
-        # Fallback to showing filename if no message
-        filename=$(basename "${files[$i]}")
-        display_items+=("${cwds[$i]} | Session: $filename")
+        filename=$(basename "$file")
+        display_items+=("${cwd} | Session: $filename")
     fi
-done
+    sorted_projects+=("${sort_value}	${cwd}	${message}	${session_id}	${file}")
+done < <(printf '%s\n' "${projects[@]}" | sort -r)
 
 # Use fzf to select a cwd
-selected=$(printf '%s\n' "${display_items[@]}" | fzf --prompt="Select a project directory to resume: " --height=40% --reverse)
+selected=$(printf '%s\n' "${display_items[@]}" | fzf --prompt="Select a project directory to resume (sorted by $SORT_FIELD): " --height=40% --reverse)
 
 if [ -n "$selected" ]; then
     # Extract just the cwd part (before the pipe)
@@ -90,12 +110,13 @@ if [ -n "$selected" ]; then
         exit 1
     fi
     
-    selected_session_id="${session_ids[$selected_index]}"
+    # Extract session ID from the sorted projects array
+    IFS=$'\t' read -r sort_value cwd message session_id file <<< "${sorted_projects[$selected_index]}"
     
     # Change to the selected directory
     if [ -d "$selected_cwd" ]; then
-        echo "Resuming session $selected_session_id in: $selected_cwd"
-        cd "$selected_cwd" && exec claude --resume "$selected_session_id"
+        echo "Resuming session $session_id in: $selected_cwd"
+        cd "$selected_cwd" && exec claude --resume "$session_id"
     else
         echo "Error: Directory $selected_cwd no longer exists" >&2
         exit 1
