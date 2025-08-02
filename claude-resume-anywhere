@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# Function to extract cwd from first message in a jsonl file
+get_cwd_from_jsonl() {
+    local file="$1"
+    # Get the first line and extract the cwd field
+    head -n1 "$file" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null
+}
+
+# Find all jsonl files in the projects directory
+project_dir="$HOME/.claude/projects"
+if [ ! -d "$project_dir" ]; then
+    echo "Error: Directory $project_dir not found" >&2
+    exit 1
+fi
+
+# Collect all cwds with their corresponding project files
+declare -a cwds=()
+declare -a files=()
+
+while IFS= read -r -d '' file; do
+    cwd=$(get_cwd_from_jsonl "$file")
+    if [ -n "$cwd" ]; then
+        cwds+=("$cwd")
+        files+=("$file")
+    fi
+done < <(find "$project_dir" -name "*.jsonl" -type f -print0)
+
+# Check if we found any projects
+if [ ${#cwds[@]} -eq 0 ]; then
+    echo "No Claude projects found in $project_dir" >&2
+    exit 1
+fi
+
+# Create a list for fzf with both cwd and filename
+declare -a display_items=()
+for i in "${!cwds[@]}"; do
+    filename=$(basename "${files[$i]}")
+    display_items+=("${cwds[$i]} | $filename")
+done
+
+# Use fzf to select a cwd
+selected=$(printf '%s\n' "${display_items[@]}" | fzf --prompt="Select a project directory to resume: " --height=40% --reverse)
+
+if [ -n "$selected" ]; then
+    # Extract just the cwd part (before the pipe)
+    selected_cwd=$(echo "$selected" | cut -d'|' -f1 | xargs)
+    
+    # Change to the selected directory
+    if [ -d "$selected_cwd" ]; then
+        echo "Resuming in: $selected_cwd"
+        cd "$selected_cwd" && exec $SHELL
+    else
+        echo "Error: Directory $selected_cwd no longer exists" >&2
+        exit 1
+    fi
+fi
