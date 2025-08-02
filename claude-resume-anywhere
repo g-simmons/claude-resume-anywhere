@@ -31,10 +31,11 @@ if [ ! -d "$project_dir" ]; then
     exit 1
 fi
 
-# Collect all cwds with their corresponding project files and messages
+# Collect all cwds with their corresponding project files, messages, and session IDs
 declare -a cwds=()
 declare -a files=()
 declare -a messages=()
+declare -a session_ids=()
 
 while IFS= read -r -d '' file; do
     cwd=$(get_cwd_from_jsonl "$file")
@@ -43,6 +44,9 @@ while IFS= read -r -d '' file; do
         files+=("$file")
         message=$(get_first_message "$file")
         messages+=("$message")
+        # Extract session ID from filename (it's the UUID before .jsonl)
+        session_id=$(basename "$file" .jsonl)
+        session_ids+=("$session_id")
     fi
 done < <(find "$project_dir" -name "*.jsonl" -type f -print0)
 
@@ -72,10 +76,26 @@ if [ -n "$selected" ]; then
     # Extract just the cwd part (before the pipe)
     selected_cwd=$(echo "$selected" | cut -d'|' -f1 | xargs)
     
+    # Find the index of the selected item to get the session ID
+    selected_index=-1
+    for i in "${!display_items[@]}"; do
+        if [ "${display_items[$i]}" = "$selected" ]; then
+            selected_index=$i
+            break
+        fi
+    done
+    
+    if [ $selected_index -eq -1 ]; then
+        echo "Error: Could not find selected item" >&2
+        exit 1
+    fi
+    
+    selected_session_id="${session_ids[$selected_index]}"
+    
     # Change to the selected directory
     if [ -d "$selected_cwd" ]; then
-        echo "Resuming in: $selected_cwd"
-        cd "$selected_cwd" && exec $SHELL
+        echo "Resuming session $selected_session_id in: $selected_cwd"
+        cd "$selected_cwd" && exec claude --resume "$selected_session_id"
     else
         echo "Error: Directory $selected_cwd no longer exists" >&2
         exit 1
